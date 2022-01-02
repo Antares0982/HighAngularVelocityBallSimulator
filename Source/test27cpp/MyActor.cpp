@@ -8,10 +8,13 @@
 
 // assume that the ball has radius 22.5cm, i.e. mass will be greater 100 times (normal ping-pong ball has radius 2.25cm)
 
+#define _roll_fric_mu 0.01f
 #define _fric_mu 0.5f
+#define _wall_fric_mu 2.7f
 #define _inertial 63300.f // g*cm^2, see: https://patents.google.com/patent/CN102494844A
 #define _mass 245.f       // g
-#define _velocity_ratio_after_collision 0.9f
+#define _xi 0.9f
+#define _wall_xi 0.9f
 #define _gravity_accel 980.f
 
 // Sets default values
@@ -80,7 +83,6 @@ bool AMyActor::canTouchGround(const float &deltatime, float &happentime) {
     const auto &vz = velocity.Z;
     if (vz >= 0) return false;
 
-
     auto newlocz = locz + vz * deltatime;
     if (newlocz > zbound) return false;
     happentime = (zbound - locz) / vz; // note: vz is negative here
@@ -89,19 +91,15 @@ bool AMyActor::canTouchGround(const float &deltatime, float &happentime) {
 
 
 void AMyActor::touchGround(FVector &position, const float &happentime) {
+    position += happentime * velocity;
     float r = getradius();                   // Assume scales from all directions are the same
     if (velocity.Z * velocity.Z < 12100.f) { // velocity on z axis too small, stop
         velocity.Z = 0.f;
-        velocity *= _velocity_ratio_after_collision;
         position.Z = zbound;
-        angularVelocity *= _velocity_ratio_after_collision;
-        GEngine->AddOnScreenDebugMessage(0, 10.0f, FColor::Red, "0, Velocity: " + velocity.ToCompactString());
-        //GEngine->AddOnScreenDebugMessage(0, 1.0f, FColor::Red, "Position: " + position.ToCompactString());
         return;
     }
 
     // modify position first, then velocity
-    position += happentime * velocity;
     if (position.Z < zbound) position.Z = zbound;
 
     // if velocity is positive, do nothing
@@ -109,19 +107,16 @@ void AMyActor::touchGround(FVector &position, const float &happentime) {
 
     // modify velocity and angular velocity
     // first modify z direction to positive
-    velocity.Z = -velocity.Z;
+    velocity.Z = -_xi * velocity.Z;
+
     // calculate the relative velocity to hit point
     auto touch_velocity = getTouchVelocity({0, 0, r});
     auto touch_velocity_direction = touch_velocity.GetSafeNormal();
-    if (touch_velocity_direction.IsNearlyZero()) { // no friction
-        velocity *= _velocity_ratio_after_collision;
-        angularVelocity *= _velocity_ratio_after_collision;
-        return;
-    }
+    if (touch_velocity_direction.IsNearlyZero()) return; // no friction
 
     float touch_v_norm = std::sqrt(FVector::DotProduct(touch_velocity, touch_velocity));
     // define v_center_coef = 2* mu * vz
-    float v_center_coef = 2 * _fric_mu * velocity.Z;
+    float v_center_coef = (1 + _xi) * _fric_mu * velocity.Z;
 
     // Note: the friction does not always exist!
     // Check if the friction always exists during hit. Renew v_center_coef
@@ -137,13 +132,7 @@ void AMyActor::touchGround(FVector &position, const float &happentime) {
     auto dir = -FVector::CrossProduct({0, 0, 1.f}, touch_velocity_direction);
     angularVelocity += v_center_coef * r * (_mass / _inertial) * dir;
 
-    // velocity decreases after collision
-    velocity *= _velocity_ratio_after_collision;
-    angularVelocity *= _velocity_ratio_after_collision;
-
     GEngine->AddOnScreenDebugMessage(0, 10.0f, FColor::Red, "total touch v: " + getTouchVelocity({0, 0, r}).ToCompactString());
-    // GEngine->AddOnScreenDebugMessage(0, 10.0f, FColor::Red, "2, Velocity: " + velocity.ToCompactString(), false);
-    //GEngine->AddOnScreenDebugMessage(0, 1.0f, FColor::Red, "Position: " + position.ToCompactString());
 }
 
 void AMyActor::touchWallX(FVector &position, const float &happentime) {
@@ -152,35 +141,26 @@ void AMyActor::touchWallX(FVector &position, const float &happentime) {
     float r = getradius(); // Assume scales from all directions are the same
     bool hitmax = std::abs(xboundMax - r - position.X) < std::abs(xboundMin + r - position.X);
     position.X = hitmax ? xboundMax - r : xboundMin + r;
-    if (velocity.X * velocity.X < 25.f) { // velocity on z axis too small, stop
-        velocity.X = 0.f;
-        velocity *= _velocity_ratio_after_collision;
-        angularVelocity *= _velocity_ratio_after_collision;
-        return;
-    }
 
     // if velocity is not the direction, do nothing
-    if ((hitmax && velocity.X < 0) || (!hitmax && velocity.X > 0)) return;
+    if ((hitmax && velocity.X <= 0) || (!hitmax && velocity.X >= 0)) return;
 
     // modify velocity and angular velocity
     // first modify z direction
-    velocity.X = -velocity.X;
+    velocity.X = -_wall_xi * velocity.X;
 
     auto touch_velocity = getTouchVelocity({hitmax ? -r : r, 0, 0});
     auto touch_velocity_direction = touch_velocity.GetSafeNormal();
-    if (touch_velocity_direction.IsNearlyZero()) {
-        velocity *= _velocity_ratio_after_collision;
-        angularVelocity *= _velocity_ratio_after_collision;
-        return;
-    }
+    if (touch_velocity_direction.IsNearlyZero()) return;
 
     float touch_v_norm = std::sqrt(FVector::DotProduct(touch_velocity, touch_velocity));
+
     // define v_center_coef = 2* mu * vz
-    float v_center_coef = 2 * _fric_mu * std::abs(velocity.X);
+    float v_center_coef = (1 + _wall_xi) * _wall_fric_mu * std::abs(velocity.X);
 
     // Note: the friction does not always exist!
     // Check if the friction always exists during hit. Renew v_center_coef
-    v_center_coef = std::min(v_center_coef, touch_v_norm); // friction does not exist during hit, renew it
+    v_center_coef = std::min(v_center_coef, touch_v_norm * _inertial / (_inertial + r * r * _mass)); // friction does not exist during hit, renew it
 
     // friction is inverse to touch_velocity
     // Delta v = 2 * mu * v_z
@@ -189,10 +169,7 @@ void AMyActor::touchWallX(FVector &position, const float &happentime) {
     // Delta w = 2 * mu * r * vz * (mass / inertia)
     // direction: fric cross normal, i.e. normal cross touch_velocity_direction
     angularVelocity += -v_center_coef * r * (_mass / _inertial) * FVector::CrossProduct({hitmax ? -1.f : 1.f, 0, 0}, touch_velocity_direction);
-
-    // velocity decreases after collision
-    velocity *= _velocity_ratio_after_collision;
-    angularVelocity *= _velocity_ratio_after_collision;
+    GEngine->AddOnScreenDebugMessage(0, 10.0f, FColor::Red, "angularVelocity: " + angularVelocity.ToCompactString());
 }
 
 void AMyActor::touchWallY(FVector &position, const float &happentime) {
@@ -202,35 +179,25 @@ void AMyActor::touchWallY(FVector &position, const float &happentime) {
     bool hitmax = std::abs(yboundMax - r - position.Y) < std::abs(yboundMin + r - position.Y);
     position.Y = hitmax ? yboundMax - r : yboundMin + r;
 
-    //if (velocity.Y * velocity.Y < 25.f) { // velocity on z axis too small, stop
-    //    velocity.Y = 0.f;
-    //    velocity *= _velocity_ratio_after_collision;
-    //    angularVelocity *= _velocity_ratio_after_collision;
-    //    return;
-    //}
-
     // if velocity is not the direction, do nothing
     if ((hitmax && velocity.Y < 0) || (!hitmax && velocity.Y > 0)) return;
 
     // modify velocity and angular velocity
     // first modify z direction
-    velocity.Y = -velocity.Y;
+    velocity.Y = -_wall_xi * velocity.Y;
 
     auto touch_velocity = getTouchVelocity({0, hitmax ? -r : r, 0});
     auto touch_velocity_direction = touch_velocity.GetSafeNormal();
-    if (touch_velocity_direction.IsNearlyZero()) {
-        velocity *= _velocity_ratio_after_collision;
-        angularVelocity *= _velocity_ratio_after_collision;
-        return;
-    }
+    if (touch_velocity_direction.IsNearlyZero()) return;
 
     float touch_v_norm = std::sqrt(FVector::DotProduct(touch_velocity, touch_velocity));
-    // define v_center_coef = 2* mu * vz
-    float v_center_coef = 2 * _fric_mu * std::abs(velocity.Y);
+
+    // define v_center_coef = (1 + xi) * mu * vz
+    float v_center_coef = (1 + _wall_xi) * _wall_fric_mu * std::abs(velocity.Y);
 
     // Note: the friction does not always exist!
     // Check if the friction always exists during hit. Renew v_center_coef
-    v_center_coef = std::min(v_center_coef, touch_v_norm); // friction does not exist during hit, renew it
+    v_center_coef = std::min(v_center_coef, touch_v_norm * _inertial / (_inertial + r * r * _mass)); // friction does not exist during hit, renew it
 
     // friction is inverse to touch_velocity
     // Delta v = 2 * mu * v_z
@@ -239,10 +206,7 @@ void AMyActor::touchWallY(FVector &position, const float &happentime) {
     // Delta w = 2 * mu * r * vz * (mass / inertia)
     // direction: fric cross normal, i.e. normal cross touch_velocity_direction
     angularVelocity += -v_center_coef * r * (_mass / _inertial) * FVector::CrossProduct({0, hitmax ? -1.f : 1.f, 0}, touch_velocity_direction);
-
-    // velocity decreases after collision
-    velocity *= _velocity_ratio_after_collision;
-    angularVelocity *= _velocity_ratio_after_collision;
+    GEngine->AddOnScreenDebugMessage(0, 10.0f, FColor::Red, "angularVelocity: " + angularVelocity.ToCompactString());
 }
 
 void AMyActor::recursiveRenewPosition(float &DeltaTime) {
@@ -252,7 +216,9 @@ void AMyActor::recursiveRenewPosition(float &DeltaTime) {
             canstart = false;
             return;
         }
-        roll(DeltaTime);
+        FVector NewLocation = GetActorLocation();
+        roll(NewLocation, DeltaTime);
+        SetActorLocation(NewLocation);
         return;
     }
 
@@ -286,6 +252,12 @@ void AMyActor::recursiveRenewPosition(float &DeltaTime) {
     if (flag == TOUCHGROUND) {
         GEngine->AddOnScreenDebugMessage(0, 1.0f, FColor::Red, TEXT("HIT GROUND"));
         touchGround(NewLocation, happentime);
+        if (isOnGround()) {
+            DeltaTime -= happentime;
+            roll(NewLocation, DeltaTime);
+            SetActorLocation(NewLocation);
+            return;
+        }
         freedown(NewLocation, DeltaTime - happentime);
         SetActorLocation(NewLocation);
         return;
@@ -311,15 +283,15 @@ void AMyActor::recursiveRenewPosition(float &DeltaTime) {
 }
 
 
-void AMyActor::roll(float &DeltaTime, bool pureroll) {
+void AMyActor::roll(FVector &location, float &DeltaTime, bool pureroll) {
+    if (DeltaTime <= 0) return;
     velocity.Z = 0.f;
-
+    location += velocity * DeltaTime;
     auto r = getradius();
     auto vline = getTouchVelocity({0, 0, r});
-    if (pureroll || vline.IsNearlyZero(0.01f)) {
-        
-        auto diff = -r * _fric_mu * _gravity_accel * (_mass / _inertial) * DeltaTime * FVector::CrossProduct({0, 0, 1.f}, vline).GetSafeNormal();
-        ;
+    if (pureroll || vline.IsNearlyZero(0.01f)) { // ¹ö¶¯Ä¦²Á
+        auto diff = -r * _roll_fric_mu * _gravity_accel * (_mass / _inertial) * DeltaTime * angularVelocity;
+
         if (FVector::DotProduct(angularVelocity, angularVelocity + diff) < 0)
             angularVelocity = FVector(0.f);
         else
@@ -327,14 +299,15 @@ void AMyActor::roll(float &DeltaTime, bool pureroll) {
         velocity = -getTouchVelocityOfAngular({0, 0, r});
         return;
     }
+    // »¬¶¯Ä¦²Á
     auto deltav = _gravity_accel * _fric_mu * DeltaTime;
     auto normalsquarevline = FVector::DotProduct(vline, vline);
     if (normalsquarevline < deltav * deltav) {
-        auto newdelta = normalsquarevline * DeltaTime / (deltav * deltav);
+        auto newdelta = std::sqrt(normalsquarevline) * DeltaTime / deltav;
         DeltaTime -= newdelta;
         angularVelocity += -r * _fric_mu * _gravity_accel * (_mass / _inertial) * newdelta * FVector::CrossProduct({0, 0, 1.f}, vline).GetSafeNormal();
         velocity = -getTouchVelocityOfAngular({0, 0, r});
-        roll(DeltaTime, true);
+        roll(location, DeltaTime, true);
         return;
     }
     angularVelocity += -r * _fric_mu * _gravity_accel * (_mass / _inertial) * DeltaTime * FVector::CrossProduct({0, 0, 1.f}, vline).GetSafeNormal();

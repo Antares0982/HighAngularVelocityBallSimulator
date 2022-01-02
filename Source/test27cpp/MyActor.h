@@ -78,7 +78,7 @@ private:
 
     bool isOnGround() { return velocity.IsZero() && GetActorLocation().Z <= zbound + getradius(); }
 
-    void roll(float &DeltaTime, bool pureroll = false);
+    void roll(FVector &, float &DeltaTime, bool pureroll = false);
 
     float getradius() { return GetActorScale().X * _radius; }
 
