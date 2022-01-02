@@ -1,6 +1,6 @@
 # 高速旋转球体的物理动画模拟（虚幻4实现）
 
-> GitHub仓库 [地址](https://github.com/Antares0982/HighAngularVelocityBallSimulator)
+> 我的[博客](https://chr.fan/ue4-ball/)
 
 前几天突发奇想，虚幻4里有没有办法模拟出乒乓球在真实世界的运动规律呢（比如下旋的回弹，上旋加速等）？
 
